@@ -1,0 +1,4 @@
+# /etc/default/liquorix-sign - custom signing key, both or neither.
+# unset: /var/lib/liquorix, then shim-signed, dkms, akmods keys.
+#KEY=/var/lib/liquorix/mok.key
+#CERT=/var/lib/liquorix/mok.der

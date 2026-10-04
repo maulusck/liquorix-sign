@@ -1,0 +1,5 @@
+#!/bin/sh
+# /etc/kernel/postinst.d hook: $1=version $2=image. a removed-not-purged
+# package leaves this conffile behind, so never break other kernels then.
+[ -x /usr/bin/liquorix-sign ] && [ -n "${2:-}" ] || exit 0
+exec /usr/bin/liquorix-sign "$2"

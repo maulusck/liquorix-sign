@@ -1,0 +1,5 @@
+#!/bin/sh
+# kernel-install plugin: add VERSION ENTRY_DIR IMAGE. runs before 20-grub
+# and 90-loaderentry copy the image, so the copy is already signed.
+[ "$1" = add ] && [ -n "${4:-}" ] || exit 0
+exec /usr/bin/liquorix-sign "$4"

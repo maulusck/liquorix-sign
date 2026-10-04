@@ -1,0 +1,33 @@
+name: liquorix-sign
+arch: all
+platform: linux
+version: ${VERSION}
+maintainer: maulusck <maulusck@protonmail.com>
+description: Sign Liquorix kernels with a shim MOK for Secure Boot on every kernel install
+contents:
+  - src: liquorix-sign
+    dst: /usr/bin/liquorix-sign
+    file_info: {mode: 0755}
+  - src: default
+    dst: /etc/default/liquorix-sign
+    type: config|noreplace
+    file_info: {mode: 0644}
+  - dst: /var/lib/liquorix
+    type: dir
+    file_info: {mode: 0700}
+  - src: hooks/debian
+    dst: /etc/kernel/postinst.d/liquorix-sign
+    packager: deb
+    file_info: {mode: 0755}
+  - src: hooks/fedora
+    dst: /usr/lib/kernel/install.d/10-liquorix-sign.install
+    packager: rpm
+    file_info: {mode: 0755}
+  - src: hooks/arch.hook
+    dst: /usr/share/libalpm/hooks/90-liquorix-sign.hook
+    packager: archlinux
+    file_info: {mode: 0644}
+overrides:
+  deb: {depends: [sbsigntool, mokutil, openssl]}
+  rpm: {depends: [sbsigntools, mokutil, openssl]}
+  archlinux: {depends: [sbsigntools, mokutil, openssl]}

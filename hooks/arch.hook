@@ -1,0 +1,12 @@
+# after 60-mkinitcpio-install has copied vmlinuz into /boot
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = linux-lqx
+
+[Action]
+Description = Signing Liquorix kernel for Secure Boot...
+When = PostTransaction
+Exec = /usr/bin/liquorix-sign
+Depends = sbsigntools

@@ -1,0 +1,127 @@
+#!/bin/sh
+# liquorix-sign - sign Liquorix kernels with a shim MOK for Secure Boot
+#
+#   liquorix-sign            sign every liquorix kernel in /boot
+#   liquorix-sign IMAGE...   sign these; non-liquorix images are skipped
+#   liquorix-sign enroll     find or make a key, stage it in MOK, sign /boot
+#
+# key: KEY= and CERT= in /etc/default/liquorix-sign, else the first pair in
+# /var/lib/liquorix, Ubuntu shim-signed, dkms, akmods. cert: PEM or DER.
+set -eu
+
+me=liquorix-sign
+own=/var/lib/liquorix
+BOOT=${BOOT:-/boot}
+SYSEFI=${SYSEFI:-/sys/firmware/efi}
+say() { echo "$me: $*"; }
+die() { echo "$me: $*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "must be root"
+[ ! -r /etc/default/$me ] || . /etc/default/$me
+umask 077
+tmp=
+trap '[ -z "$tmp" ] || rm -rf "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+
+findkey() {
+	[ -z "${KEY:-}${CERT:-}" ] || {
+		[ -n "${KEY:-}" ] && [ -n "${CERT:-}" ] || die "set both KEY and CERT"
+		return 0
+	}
+	# ours first: it is the one we enrolled, even if dkms shows up later
+	for p in "$own/mok.key $own/mok.der" \
+		"/var/lib/shim-signed/mok/MOK.priv /var/lib/shim-signed/mok/MOK.der" \
+		"/var/lib/dkms/mok.key /var/lib/dkms/mok.pub" \
+		"/etc/pki/akmods/private/private_key.priv /etc/pki/akmods/certs/public_key.der"; do
+		set -- $p
+		[ -f "$1" ] && [ -f "$2" ] && { KEY=$1 CERT=$2; return 0; }
+	done
+	return 1
+}
+
+genkey() {
+	mkdir -p "$own" && chmod 700 "$own"
+	out=$(openssl req -new -x509 -newkey rsa:2048 -nodes -days 36500 \
+		-subj "/CN=Liquorix MOK $(uname -n)/" \
+		-keyout "$own/mok.key.tmp" -outform DER -out "$own/mok.der.tmp" 2>&1) ||
+		die "keygen failed: $out"
+	# key lands first: a crash before the cert just means regenerate next run
+	mv -f "$own/mok.key.tmp" "$own/mok.key"
+	mv -f "$own/mok.der.tmp" "$own/mok.der"
+	sync "$own"
+	KEY=$own/mok.key CERT=$own/mok.der
+	say "generated $own/mok.der"
+}
+
+loadkey() {
+	[ -f "$KEY" ] && [ -f "$CERT" ] || die "missing $KEY or $CERT"
+	[ -n "$(find "$KEY" -user 0 ! -perm /077)" ] || die "$KEY must be root-owned, mode 600"
+	tmp=$(mktemp -d)
+	if grep -q 'BEGIN CERTIFICATE' "$CERT"; then f=PEM; else f=DER; fi
+	openssl x509 -inform $f -in "$CERT" -out "$tmp/c.pem" 2>/dev/null || die "bad cert $CERT"
+	openssl x509 -in "$tmp/c.pem" -outform DER -out "$tmp/c.der"
+	[ "$(openssl x509 -in "$tmp/c.pem" -noout -pubkey)" = "$(openssl pkey -in "$KEY" -pubout 2>/dev/null)" ] ||
+		die "$KEY does not match $CERT"
+}
+
+enrolled() {
+	# ponytail: no efivars (chroot, BIOS) -> can't check, sign anyway
+	[ -d "$SYSEFI" ] || { say "no EFI, MOK check skipped"; return 0; }
+	out=$(mokutil --test-key "$tmp/c.der" 2>&1) || :
+	case $out in
+	*"already enrolled"*) return 0 ;;
+	*"enrollment request"*) say "MOK pending: reboot, pick 'Enroll MOK'"; return 0 ;;
+	esac
+	return 1
+}
+
+sign() {
+	case $1 in *liquorix* | *lqx*) ;; *) return 0 ;; esac
+	[ -f "$1" ] || die "$1: no such file"
+	k=$(readlink -f "$1")
+	[ -n "$tmp" ] || {
+		findkey || die "no signing key, run: $me enroll"
+		loadkey
+		enrolled || die "$CERT not enrolled, run: $me enroll"
+	}
+	if sbverify --cert "$tmp/c.pem" "$k" >/dev/null 2>&1; then
+		say "ok     $k"
+		return 0
+	fi
+	# dotfile: invisible to the /boot glob if we die mid-way
+	t=${k%/*}/.${k##*/}.$me
+	rm -f "$t"
+	out=$(sbsign --key "$KEY" --cert "$tmp/c.pem" --output "$t" "$k" 2>&1) &&
+		sbverify --cert "$tmp/c.pem" "$t" >/dev/null 2>&1 &&
+		chmod "$(stat -c %a "$k")" "$t" && sync "$t" ||
+		{ rm -f "$t"; die "$k: signing failed, original untouched: $out"; }
+	mv -f "$t" "$k"
+	sync "${k%/*}"
+	say "signed $k"
+}
+
+case ${1:-} in
+-h | --help) sed -n '2,9s/^# \{0,1\}//p' "$0"; exit 0 ;;
+enroll)
+	[ $# -eq 1 ] || die "usage: $me enroll"
+	shift
+	findkey || genkey
+	loadkey
+	if ! enrolled; then
+		mokutil --import "$tmp/c.der" || die "mokutil --import failed"
+		say "staged $CERT: reboot, pick 'Enroll MOK'"
+	fi
+	;;
+esac
+
+if [ $# -eq 0 ]; then
+	n=0
+	for k in "$BOOT"/vmlinuz*liquorix* "$BOOT"/vmlinuz*lqx*; do
+		[ -f "$k" ] || continue
+		sign "$k"
+		n=$((n + 1))
+	done
+	[ "$n" -gt 0 ] || die "no liquorix kernel in $BOOT"
+else
+	for k; do sign "$k"; done
+fi
